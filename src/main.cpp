@@ -28,7 +28,7 @@ uint8_t const desc_hid_report[] = {
 // --- GLOBALS ---
 Adafruit_USBD_HID usb_hid;
 StatusLED led(NEO_PIN);
-bool cirMode = true; 
+volatile bool cirMode = true; // Volatile for safe cross-core access
 bool lastBtnState = false;
 bool lastUsbState = false;
 
@@ -52,6 +52,7 @@ void checkUSBConnection() {
 
 /**
  * @brief Dispatches IR codes to HID and Serial
+ * Called from Core 1
  */
 void handleIR(uint32_t code) {
     #if DEBUG
@@ -96,17 +97,19 @@ void handleIR(uint32_t code) {
     }
 }
 
+// ==========================================
+// CORE 0: USB Stack, UI, and System Checks
+// ==========================================
 void setup() {
     // 1. Spoof Identity
     USBDevice.setID(0x045E, 0x006D); 
     USBDevice.setManufacturerDescriptor("Microsoft");
     USBDevice.setProductDescriptor("eHome Infrared Transceiver");
     USBDevice.setSerialDescriptor("CIR-RP2040-PUNE");
-    USBDevice.setVersion(0x0100); // Version 1.0
+    USBDevice.setVersion(0x0100);
 
     #if DEBUG
     Serial.begin(115200);
-    // Give user time to open Serial Monitor
     #endif
 
     // 2. Init HID
@@ -114,16 +117,15 @@ void setup() {
     usb_hid.setReportDescriptor(desc_hid_report, sizeof(desc_hid_report));
     usb_hid.begin();
 
-    // 3. Init Peripherals
-    IrReceiver.begin(IR_PIN, ENABLE_LED_FEEDBACK);
+    // 3. Init NeoPixel
     led.begin();
     led.showMode(cirMode);
 
     #if DEBUG
-    // Small delay so the first serial messages aren't lost
     delay(2000); 
-    Serial.println(F("--- RP2040 Multi-Mode IR initialized ---"));
-    Serial.printf("Default Mode: %s\n", cirMode ? "CIR (Green)" : "RAW (Blue)");
+    Serial.println(F("--- RP2040 Multi-Core IR Ready ---"));
+    Serial.printf("Core 0: USB & System Management\n");
+    Serial.printf("Core 1: IR Pulse Sampling\n");
     #endif
 }
 
@@ -142,11 +144,23 @@ void loop() {
         delay(300); 
     }
     lastBtnState = currentBtn;
+}
 
-    // Handle Incoming IR
+// ==========================================
+// CORE 1: Dedicated IR Decoding Loop
+// ==========================================
+void setup1() {
+    // Start the IR Receiver exclusively on Core 1
+    IrReceiver.begin(IR_PIN, ENABLE_LED_FEEDBACK);
+}
+
+void loop1() {
+    // Handle Incoming IR pulses on Core 1
     if (IrReceiver.decode()) {
         if (!(IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT) && 
             IrReceiver.decodedIRData.decodedRawData != 0) {
+            
+            // Note: TinyUSB sendReport is thread-safe on RP2040 Philhower core
             handleIR(IrReceiver.decodedIRData.decodedRawData);
         }
         IrReceiver.resume();
