@@ -6,7 +6,7 @@
 
 // --- CONFIGURATION ---
 #define DEBUG 1            // Set to 1 to enable Serial console, 0 to disable
-#define IR_PIN 2           // GPIO pin for IR Receiver
+#define IR_PIN 29          // Using GP29 as per your physical wiring
 #define NEO_PIN 16         // Onboard NeoPixel (GPIO 16 for RP2040-Zero)
 
 // --- HARDWARE ROM LOOKUP ---
@@ -19,10 +19,11 @@ bool get_bootsel_button() {
     return bootsel_func ? bootsel_func() : false;
 }
 
-// --- USB HID DESCRIPTOR ---
+// --- USB HID DESCRIPTOR (Added Keyboard Support) ---
 uint8_t const desc_hid_report[] = {
     TUD_HID_REPORT_DESC_CONSUMER( HID_REPORT_ID(1) ),
-    TUD_HID_REPORT_DESC_GENERIC_INOUT( 64, HID_REPORT_ID(2) )
+    TUD_HID_REPORT_DESC_GENERIC_INOUT( 64, HID_REPORT_ID(2) ),
+    TUD_HID_REPORT_DESC_KEYBOARD( HID_REPORT_ID(3) ) // New: Keyboard Report
 };
 
 // --- GLOBALS ---
@@ -61,26 +62,28 @@ void handleIR(uint32_t code) {
     #endif
 
     if (cirMode) {
-        // WINDOWS MODE: Find mapping and send Media Key
-        bool found = false;
         for (int i = 0; i < MAP_SIZE; i++) {
             if (irToMediaMap[i].irCode == code) {
-                uint16_t usage = irToMediaMap[i].usageId;
-                usb_hid.sendReport(1, &usage, 2);
-                delay(10);
-                uint16_t empty = 0;
-                usb_hid.sendReport(1, &empty, 2);
-                
+                if (irToMediaMap[i].type == MEDIA) {
+                    uint16_t usage = irToMediaMap[i].usageId;
+                    usb_hid.sendReport(1, &usage, 2);
+                    delay(10);
+                    uint16_t empty = 0;
+                    usb_hid.sendReport(1, &empty, 2);
+                } 
+                else if (irToMediaMap[i].type == KEYBOARD) {
+                    // Send Keyboard Report (ID 3) with potential modifiers (like Alt)
+                    uint8_t keycode[6] = { (uint8_t)irToMediaMap[i].usageId, 0, 0, 0, 0, 0 };
+                    usb_hid.keyboardReport(3, irToMediaMap[i].modifier, keycode);
+                    delay(10);
+                    usb_hid.keyboardRelease(3);
+                }
                 #if DEBUG
-                Serial.printf("[CIR] Mapping Found: %s -> Sent to Windows\n", irToMediaMap[i].description);
+                Serial.printf("[CIR] Mapping Found: %s\n", irToMediaMap[i].description);
                 #endif
-                found = true;
-                break;
+                return;
             }
         }
-        #if DEBUG
-        if(!found) Serial.println(F("[CIR] No mapping found for this code."));
-        #endif
     } else {
         // LINUX RAW MODE: Send via HID Report ID 2
         uint8_t packet[4];
